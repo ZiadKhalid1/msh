@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -g
-LDFLAGS = -lreadline
+CFLAGS = -Wall -Wextra -g
+LDFLAGS = -lreadline -lncurses
 SRC = msh.c
 OUT = msh
 
