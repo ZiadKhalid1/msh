@@ -9,14 +9,6 @@
 #include <unistd.h>
 #include <readline/history.h>
 #include <readline/readline.h>
-extern char **environ;
-
-#define NAME_MAX 255
-
-char *allocate_buf() {
-  char *buf = (char *)malloc(sizeof(char) * BUFSIZ);
-  return buf;
-}
 
 typedef struct {
   char name[NAME_MAX];
@@ -24,18 +16,12 @@ typedef struct {
 } var_t;
 
 typedef enum {
-  start,
-  name,
-  success,
-} state_t;
-
-typedef enum {
   START,
   IN_QUOTE,
   IN_WORD,
   IN_REDIRECT,
   DONE,
-} state;
+} state_t;
 
 typedef struct {
   char symbol;
@@ -59,18 +45,219 @@ typedef struct {
 var_t *local_vars = NULL;
 int local_vars_count = 0;
 
-void env_substitute(char **token);
-void fsm_redirection(char **token, input_command_t *args);
+char *readline_input(int status);
+void add_local_var(input_command_t args);
+char *search_var(char *name);
+input_command_t fsm_parser(char *buf);
+input_command_t redirection(const input_command_t args);
+int executor(input_command_t args);
+void cleanup(input_command_t args, char *buf);
 
-void add_local_var(input_command_t args) {
-    if(args.envc > 1)
-        return;
-    strcpy(local_vars[local_vars_count].name, args.env[0].name);
-    strcpy(local_vars[local_vars_count].value, args.env[0].value);
-    local_vars_count++;
+int _export(const input_command_t args);
+int cd(const input_command_t args);
+int pwd(const input_command_t args);
+const command_t builtins[] = {{.command_name = "cd", .main = cd},
+                              {.command_name = "pwd", .main = pwd},
+                              {.command_name = "export", .main = _export}};
+
+int main(int argc, char *argv[]) {
+  // Ignore SIGINT (Ctrl+C) globally; readline won't be interrupted
+  signal(SIGINT, SIG_IGN);
+
+  // Tell readline not to install its own signal handlers
+  rl_catch_signals = 0;
+  local_vars = calloc(256, sizeof(var_t));
+  int status = 0;
+  while (1) {
+    char *buf = readline_input(status);
+    input_command_t args = fsm_parser(buf);
+
+    if (args.argc == 0) {
+      free(buf);
+      cleanup(args, buf);
+      continue;
+    }
+
+    if (strcmp(args.argv[0], "exit") == 0) {
+      cleanup(args, buf);
+      // Free global local variables storage
+      free(local_vars);
+      // Clear readline history
+      rl_clear_history();
+      return status;
+    }
+
+    status = executor(args);
+    cleanup(args, buf);
+  }
 }
 
-int Export(const input_command_t args) {
+char *readline_input(int status) {
+  const char *username = getenv("USER");
+  if (username == NULL)
+    username = "unknown";
+
+  const char *pwd = getenv("PWD");
+  if (pwd == NULL)
+    pwd = "unknown";
+
+  char prompt[1024];
+  snprintf(prompt, sizeof(prompt), "%s:%s> ", username, pwd);
+
+  char *input = readline(prompt);
+  if (input == NULL) {
+    printf("\n");
+    exit(status);
+  }
+
+  if (*input) {
+    add_history(input);
+  }
+  return input;
+}
+
+char* search_var(char *name) {
+  for (int i = 0; i < local_vars_count; i++) {
+    if (strcmp(name, local_vars[i].name) == 0) {
+      return local_vars[i].value;
+    }
+  }
+  char *value = getenv(name);
+  if (value != NULL)
+    return value;
+
+  return NULL;
+}
+
+input_command_t fsm_parser(char *buf) {
+  state_t s = START;
+  char line[1024] = {0};
+  size_t line_len = 0;
+  size_t argv_capacity = 16;
+  input_command_t args = {.argc = 0,
+                          .argv = calloc(argv_capacity, sizeof(char *)),
+                          .env = calloc(8, sizeof(var_t)),
+                          .envc = 0,
+                          .redirections = calloc(6, sizeof(redirect_t)),
+                          .redirections_count = 0};
+
+  while (*buf != '\0') {
+    switch (s) {
+    case START:
+      if (isspace((unsigned char)*buf)) {
+        buf++;
+        break;
+      }
+      if (*buf == '"') {
+        s = IN_QUOTE;
+        buf++;
+        break;
+      }
+      if (*buf == '<' || *buf == '>') {
+        s = IN_REDIRECT;
+        args.redirections[args.redirections_count].symbol = *buf++;
+        break;
+      }
+      if (strncmp(buf, "2>", 2) == 0) {
+        s = IN_REDIRECT;
+        args.redirections[args.redirections_count].symbol = '2';
+        buf += 2;
+        break;
+      }
+      s = IN_WORD;
+      break;
+
+    case IN_QUOTE:
+      while (*buf != '"' && *buf != '\0') {
+        line[line_len++] = *buf++;
+      }
+      if (*buf == '"')
+        buf++;
+      line[line_len] = '\0';
+      args.argv[args.argc++] = strdup(line);
+      if (args.argc >= argv_capacity) {
+        argv_capacity *= 2;
+        args.argv = realloc(args.argv, argv_capacity * sizeof(char *));
+      }
+      line_len = 0;
+      memset(line, 0, sizeof(line));
+      s = START;
+      break;
+
+    case IN_WORD:
+      while (*buf != '\0' && !isspace((unsigned char)*buf) && *buf != '<' &&
+             *buf != '>' && *buf != '"') {
+        if (*buf == '$') {
+          buf++;
+          char var_buf[128] = {0};
+          int var_len = 0;
+          while (isalnum((unsigned char)*buf) || *buf == '_') {
+            var_buf[var_len++] = *buf++;
+          }
+          var_buf[var_len] = '\0';
+          const char *value = search_var(var_buf);
+          if (value) {
+            for (size_t i = 0; value[i] != '\0'; i++) {
+              line[line_len++] = value[i];
+            }
+          }
+        } else {
+
+          line[line_len++] = *buf++;
+        }
+      }
+      line[line_len] = '\0';
+      char *equal_sign = strchr(line, '=');
+      if (equal_sign != NULL && args.argc == 0) {
+        sscanf(line, "%[^=]=%s", args.env[args.envc].name,
+               args.env[args.envc].value);
+        args.envc++;
+      } else {
+        args.argv[args.argc++] = strdup(line);
+        if (args.argc >= argv_capacity) {
+          argv_capacity *= 2;
+          args.argv = realloc(args.argv, argv_capacity * sizeof(char *));
+        }
+      }
+      line_len = 0;
+      memset(line, 0, sizeof(line));
+      s = START;
+      break;
+
+    case IN_REDIRECT:
+      while (isspace((unsigned char)*buf))
+        buf++;
+      size_t redirect_start = 0;
+      while (*buf != '\0' && !isspace((unsigned char)*buf)) {
+        line[redirect_start++] = *buf++;
+      }
+      line[redirect_start] = '\0';
+      args.redirections[args.redirections_count].name = strdup(line);
+      args.redirections_count++;
+      line_len = 0;
+      memset(line, 0, sizeof(line));
+      s = START;
+      break;
+    case DONE:
+      break;
+    }
+  }
+  if (args.argc == 0) {
+    add_local_var(args);
+  }
+  args.argv[args.argc] = NULL;
+  return args;
+}
+
+void add_local_var(input_command_t args) {
+  if (args.envc > 1)
+    return;
+  strcpy(local_vars[local_vars_count].name, args.env[0].name);
+  strcpy(local_vars[local_vars_count].value, args.env[0].value);
+  local_vars_count++;
+}
+
+int _export(const input_command_t args) {
   int error = 0;
   for (int i = 1; i < args.argc; i++) {
     if (sscanf(args.argv[i], "%[^=]=%s", args.env[i].name, args.env[i].value) ==
@@ -87,132 +274,6 @@ int Export(const input_command_t args) {
   }
   return error;
 }
-
-char* search_var(char* name){
-    for(int i = 0; i < local_vars_count; i++){
-           if(strcmp(name, local_vars[i].name) == 0){
-               return local_vars[i].value;
-           }
-       }
-    char* value = getenv(name);
-    if (value != NULL)
-        return value;
-
-    return NULL;
-}
-
-input_command_t fsm_parser(char *buf) {
-    state s = START;
-    char line[1024] = {0};
-    size_t line_len = 0;
-
-    input_command_t args = {
-        .argc = 0,
-        .argv = calloc(BUFSIZ, sizeof(char *)),
-        .env = calloc(256, sizeof(var_t)),
-        .envc = 0,
-        .redirections = calloc(256, sizeof(redirect_t)),
-        .redirections_count = 0
-    };
-
-    while (*buf != '\0') {
-        switch (s) {
-        case START:
-            if (isspace((unsigned char)*buf)) {
-                buf++;
-                break;
-            }
-            if (*buf == '"') {
-                s = IN_QUOTE;
-                buf++;
-                break;
-            }
-            if (*buf == '<' || *buf == '>') {
-                s = IN_REDIRECT;
-                args.redirections[args.redirections_count].symbol = *buf++;
-                break;
-            }
-            if (strncmp(buf, "2>", 2) == 0) {
-                s = IN_REDIRECT;
-                args.redirections[args.redirections_count].symbol = '2';
-                buf += 2;
-                break;
-            }
-            s = IN_WORD;
-            break;
-
-        case IN_QUOTE:
-            while (*buf != '"' && *buf != '\0') {
-                line[line_len++] = *buf++;
-            }
-            if (*buf == '"') buf++;
-            line[line_len] = '\0';
-            args.argv[args.argc++] = strdup(line);
-            line_len = 0;
-            memset(line, 0, sizeof(line));
-            s = START;
-            break;
-
-        case IN_WORD:
-            while (*buf != '\0' && !isspace((unsigned char)*buf) && *buf != '<' && *buf != '>' && *buf != '"') {
-                if (*buf == '$') {
-                    buf++;
-                    char var_buf[128] = {0};
-                    int var_len = 0;
-                    while (isalnum((unsigned char)*buf) || *buf == '_') {
-                        var_buf[var_len++] = *buf++;
-                    }
-                    var_buf[var_len] = '\0';
-                    const char *value = search_var(var_buf);
-                    if (value) {
-                        for (size_t i = 0; value[i] != '\0'; i++) {
-                            line[line_len++] = value[i];
-                        }
-                    }
-                } else {
-
-                    line[line_len++] = *buf++;
-                }
-            }
-            line[line_len] = '\0';
-            char *equal_sign = strchr(line, '=');
-            if (equal_sign != NULL && args.argc == 0){
-                sscanf(line, "%[^=]=%s", args.env[args.envc].name,
-                           args.env[args.envc].value);
-                    args.envc++;
-            }
-            else{
-                args.argv[args.argc++] = strdup(line);
-            }
-            line_len = 0;
-            memset(line, 0, sizeof(line));
-            s = START;
-            break;
-
-        case IN_REDIRECT:
-            while (isspace((unsigned char)*buf)) buf++;
-            size_t redirect_start = 0;
-            while (*buf != '\0' && !isspace((unsigned char)*buf)) {
-                line[redirect_start++] = *buf++;
-            }
-            line[redirect_start] = '\0';
-            args.redirections[args.redirections_count].name = strdup(line);
-            args.redirections_count++;
-            line_len = 0;
-            memset(line, 0, sizeof(line));
-            s = START;
-            break;
-        case DONE:
-            break;
-        }
-    }
-    if (args.argc == 0) {
-        add_local_var(args);
-    }
-    args.argv[args.argc] = NULL;
-    return args;
-}
-
 
 input_command_t redirection(const input_command_t args) {
   int i = 0;
@@ -284,34 +345,6 @@ int cd(const input_command_t args) {
   return 0;
 }
 
-const command_t builtins[] = {{.command_name = "cd", .main = cd},
-                              {.command_name = "pwd", .main = pwd},
-                              {.command_name = "export", .main = Export}};
-
-char *readline_input(int status) {
-  const char *username = getenv("USER");
-  if (username == NULL)
-    username = "unknown";
-
-  const char *pwd = getenv("PWD");
-  if (pwd == NULL)
-    pwd = "unknown";
-
-  char prompt[1024];
-  snprintf(prompt, sizeof(prompt), "%s:%s> ", username, pwd);
-
-  char *input = readline(prompt);
-  if (input == NULL) {
-    printf("\n");
-    exit(status);
-  }
-
-  if (*input) {
-    add_history(input);
-  }
-  return input;
-}
-
 int executor(input_command_t args) {
   int i = 0;
   const int size = sizeof(builtins) / sizeof(command_t);
@@ -340,7 +373,6 @@ int executor(input_command_t args) {
   waitpid(pid, &status, 0);
   return WEXITSTATUS(status);
 }
-void cleanup(input_command_t args, char *buf);
 
 void cleanup(input_command_t args, char *buf) {
   // Free each argv element
@@ -348,41 +380,12 @@ void cleanup(input_command_t args, char *buf) {
     free(args.argv[i]);
   }
   free(args.argv);
-
   // Free env and redirection arrays
   free(args.env);
+  for (int i = 0; i < args.redirections_count; i++) {
+    free(args.redirections[i].name);
+  }
   free(args.redirections);
-
   // Free the input buffer from readline
   free(buf);
-}
-int main(int argc, char *argv[]) {
-  // Ignore SIGINT (Ctrl+C) globally; readline won't be interrupted
-  signal(SIGINT, SIG_IGN);
-
-  // Tell readline not to install its own signal handlers
-  rl_catch_signals = 0;
-  local_vars = calloc(256, sizeof(var_t));
-  int status = 0;
-  while (1) {
-    char *buf = readline_input(status);
-    input_command_t args = fsm_parser(buf);
-
-    if (args.argc == 0) {
-      free(buf);
-      continue;
-    }
-
-    if (strcmp(args.argv[0], "exit") == 0) {
-      cleanup(args, buf);
-      // Free global local variables storage
-      free(local_vars);
-      // Clear readline history
-      rl_clear_history();
-      return status;
-    }
-
-    status = executor(args);
-    cleanup(args, buf);
-  }
 }
