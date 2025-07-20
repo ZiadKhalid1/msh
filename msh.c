@@ -1,4 +1,3 @@
-#include "time.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -90,14 +89,15 @@ int Export(const input_command_t args) {
 }
 
 char* search_var(char* name){
+    for(int i = 0; i < local_vars_count; i++){
+           if(strcmp(name, local_vars[i].name) == 0){
+               return local_vars[i].value;
+           }
+       }
     char* value = getenv(name);
     if (value != NULL)
         return value;
-    for(int i = 0; i < local_vars_count; i++){
-        if(strcmp(name, local_vars[i].name) == 0){
-            return local_vars[i].value;
-        }
-    }
+
     return NULL;
 }
 
