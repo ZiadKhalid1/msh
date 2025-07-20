@@ -60,7 +60,7 @@ const command_t builtins[] = {{.command_name = "cd", .main = cd},
                               {.command_name = "pwd", .main = pwd},
                               {.command_name = "export", .main = _export}};
 
-int main(int argc, char *argv[]) {
+int main() {
   // Ignore SIGINT (Ctrl+C) globally; readline won't be interrupted
   signal(SIGINT, SIG_IGN);
 
@@ -129,8 +129,8 @@ char* search_var(char *name) {
 input_command_t fsm_parser(char *buf) {
   state_t s = START;
   char line[1024] = {0};
-  size_t line_len = 0;
-  size_t argv_capacity = 16;
+  int line_len = 0;
+  int argv_capacity = 16;
   input_command_t args = {.argc = 0,
                           .argv = calloc(argv_capacity, sizeof(char *)),
                           .env = calloc(16, sizeof(var_t)),
