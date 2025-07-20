@@ -6,7 +6,7 @@ This project is built for educational purposes to strengthen understanding of Un
 
 ---
 
-## 💑 Features
+## Features
 
 ### ✅ Built-in Commands
 - `cd`: Change directory  
