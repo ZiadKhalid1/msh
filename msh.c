@@ -1,3 +1,4 @@
+#include "time.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -89,6 +90,9 @@ int Export(const input_command_t args) {
 }
 
 char* search_var(char* name){
+    char* value = getenv(name);
+    if (value != NULL)
+        return value;
     for(int i = 0; i < local_vars_count; i++){
         if(strcmp(name, local_vars[i].name) == 0){
             return local_vars[i].value;
@@ -172,7 +176,7 @@ input_command_t fsm_parser(char *buf) {
             }
             line[line_len] = '\0';
             char *equal_sign = strchr(line, '=');
-            if (equal_sign != NULL){
+            if (equal_sign != NULL && args.argc == 0){
                 sscanf(line, "%[^=]=%s", args.env[args.envc].name,
                            args.env[args.envc].value);
                     args.envc++;
@@ -370,7 +374,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(args.argv[0], "exit") == 0) {
-      printf("Good Bye\n");
       cleanup(args, buf);
       // Free global local variables storage
       free(local_vars);
