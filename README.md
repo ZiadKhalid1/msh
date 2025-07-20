@@ -137,14 +137,4 @@ This project demonstrates:
 - Unix process control (`fork()`, `execvp()`, `waitpid()`)
 - Integration with GNU Readline
 
----
-
-## 📜 License
-Licensed under the **MIT License**.  
-You are free to use, modify, and distribute this project for educational and personal purposes.
-
----
-
-## 🤝 Contribution
-This is a personal educational project. Contributions are not expected but are welcome if they maintain the spirit of simplicity and learning.
 
