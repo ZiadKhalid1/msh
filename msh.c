@@ -73,16 +73,13 @@ int main(int argc, char *argv[]) {
     input_command_t args = fsm_parser(buf);
 
     if (args.argc == 0) {
-      free(buf);
       cleanup(args, buf);
       continue;
     }
 
     if (strcmp(args.argv[0], "exit") == 0) {
       cleanup(args, buf);
-      // Free global local variables storage
       free(local_vars);
-      // Clear readline history
       rl_clear_history();
       return status;
     }
@@ -136,9 +133,9 @@ input_command_t fsm_parser(char *buf) {
   size_t argv_capacity = 16;
   input_command_t args = {.argc = 0,
                           .argv = calloc(argv_capacity, sizeof(char *)),
-                          .env = calloc(8, sizeof(var_t)),
+                          .env = calloc(16, sizeof(var_t)),
                           .envc = 0,
-                          .redirections = calloc(6, sizeof(redirect_t)),
+                          .redirections = calloc(16, sizeof(redirect_t)),
                           .redirections_count = 0};
 
   while (*buf != '\0') {
